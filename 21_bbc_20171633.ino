@@ -13,9 +13,9 @@
 #define _SERVO_SPEED 100.0
 
 //Servo range
-#define _DUTY_MIN 1300
+#define _DUTY_MIN 1320
 #define _DUTY_NEU 1400
-#define _DUTY_MAX 1500
+#define _DUTY_MAX 1480
 
 #define INTERVAL 10.0
 
