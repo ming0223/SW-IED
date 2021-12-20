@@ -16,11 +16,12 @@
 
 // Distance sensor
 #define _DIST_ALPHA 0.5 //[20203118] DIST_ALPHA 값 설정
+#define _ITERM_MAX 580
 
 // Servo range
-#define _DUTY_MIN 1250    // [20213083]서보 각도의 최솟값 설정
-#define _DUTY_NEU 1460    // [20213090]서보 수평 각도 펄스 값
-#define _DUTY_MAX 1710    // [20213081] 서보 각도의 최댓값
+#define _DUTY_MIN 1240    // [20213083]서보 각도의 최솟값 설정
+#define _DUTY_NEU 1489    // [20213090]서보 수평 각도 펄스 값
+#define _DUTY_MAX 1740    // [20213081] 서보 각도의 최댓값
 
 // Servo speed control
 #define _SERVO_ANGLE 30.0 //[20203118] 최대 가동범위에 따른 목표 서보 회전각
@@ -32,7 +33,12 @@
 #define _INTERVAL_SERIAL 100  // [20213099] 시리얼 표시 주기 설정
 
 // PID parameters
-#define _KP 0.65        //[20191979] 비례제어 값
+#define _KI 0.006
+#define _KP 0.68        //[20191979] 비례제어 값
+#define _KD 50
+
+#define _TARGET_MIN 245
+#define _TARGET_MAX 265
 
 #define a 85
 #define b 383
@@ -60,117 +66,156 @@ int duty_target, duty_curr; //[20213086] 목표 duty와 현재 duty 값
 float error_curr, error_prev, control, pterm, dterm, iterm;
 //[20213086] error_curr: 현재 주기 오차값 / error_prev : 이전 주기 오차 값 / control : PID 제어량 / pterm, dterm, iterm : 비례,적분,미분 이득값
 
-
+#define DELAY_MICROS 1500
+#define EMA_ALPHA 0.35
+float ema_dist = 0;
+float filtered_dist;
+float samples_num = 3;
 
 void setup() {
-// initialize GPIO pins for LED and attach servo 
+  // initialize GPIO pins for LED and attach servo
   pinMode(PIN_LED, OUTPUT);
-  
-// move servo to neutral position
+
+  // move servo to neutral position
   myservo.attach(PIN_SERVO);
   duty_target = duty_curr = _DUTY_NEU;
   myservo.writeMicroseconds(duty_curr);
 
-// initialize global variables
-duty_curr=_DUTY_MIN; //[20203118] duty_curr 값 초기화
-dist_target=_DIST_TARGET; //[20203118] dist_target 값 초기화
+  // initialize global variables
+  duty_curr = _DUTY_MIN; //[20203118] duty_curr 값 초기화
+  dist_target = _DIST_TARGET; //[20203118] dist_target 값 초기화
+  pterm = iterm = dterm = 0;
 
-last_sampling_time_dist = last_sampling_time_servo = last_sampling_time_serial = 0;
-event_dist = event_servo = event_serial = false;
+  last_sampling_time_dist = last_sampling_time_servo = last_sampling_time_serial = 0;
+  event_dist = event_servo = event_serial = false;
 
-// initialize serial port
-Serial.begin(57600);
+  // initialize serial port
+  Serial.begin(57600);
 
-// convert angle speed into duty change per interval.
+  // convert angle speed into duty change per interval.
   duty_chg_per_interval = (_DUTY_MAX - _DUTY_MIN) * (_SERVO_SPEED / _SERVO_ANGLE) * (_INTERVAL_SERVO / 1000.0);//[20203118] duty_chg_per_interval 값 설정
 }
-  
-
 
 void loop() {
-/////////////////////
-// Event generator //
-/////////////////////
-// [20213090]
-unsigned long time_curr = millis();
+  /////////////////////
+  // Event generator //
+  /////////////////////
+  // [20213090]
+  unsigned long time_curr = millis();
 
-if(time_curr >= last_sampling_time_dist + _INTERVAL_DIST){
-        last_sampling_time_dist += _INTERVAL_DIST;
-        event_dist = true;
-}
-if(time_curr >= last_sampling_time_servo + _INTERVAL_SERVO){
-        last_sampling_time_servo += _INTERVAL_SERVO;
-        event_servo = true;
-}
-if(time_curr >= last_sampling_time_serial + _INTERVAL_SERIAL){
-        last_sampling_time_serial += _INTERVAL_SERIAL;
-        event_serial = true;
-}
+  if (time_curr >= last_sampling_time_dist + _INTERVAL_DIST) {
+    last_sampling_time_dist += _INTERVAL_DIST;
+    event_dist = true;
+  }
+  if (time_curr >= last_sampling_time_servo + _INTERVAL_SERVO) {
+    last_sampling_time_servo += _INTERVAL_SERVO;
+    event_servo = true;
+  }
+  if (time_curr >= last_sampling_time_serial + _INTERVAL_SERIAL) {
+    last_sampling_time_serial += _INTERVAL_SERIAL;
+    event_serial = true;
+  }
 
 
-////////////////////
-// Event handlers //
-////////////////////
+  ////////////////////
+  // Event handlers //
+  ////////////////////
 
-  if(event_dist) {
-      event_dist = false;
-  // get a distance reading from the distance sensor
-      dist_raw = ir_distance_filtered();
+  if (event_dist) {
+    event_dist = false;
+    // get a distance reading from the distance sensor
+    dist_raw = ir_distance_filtered();
 
-  // PID control logic
+    // PID control logic
     error_curr = dist_target - dist_raw;
     pterm = _KP * error_curr;
-    control = pterm;
+    dterm = _KD * (error_curr - error_prev);
+    iterm += _KI * error_curr;
+    control = pterm + dterm + iterm;
 
-  // duty_target = f(duty_neutral, control)
+    // duty_target = f(duty_neutral, control)
     duty_target = _DUTY_NEU + control;
 
-  // keep duty_target value within the range of [_DUTY_MIN, _DUTY_MAX]
-    if(duty_target > _DUTY_MAX){duty_target = _DUTY_MAX;}
-    if(duty_target < _DUTY_MIN){duty_target = _DUTY_MIN;}
-    
+    // keep duty_target value within the range of [_DUTY_MIN, _DUTY_MAX]
+    if (duty_target > _DUTY_MAX) {
+      duty_target = _DUTY_MAX;
+    }
+    if (duty_target < _DUTY_MIN) {
+      duty_target = _DUTY_MIN;
+    }
+
     error_prev = error_curr;
   }
-  
-  if(event_servo) {
-    event_servo=false; 
 
+  if (iterm > _ITERM_MAX)iterm = _ITERM_MAX;
+  if (iterm < -_ITERM_MAX)iterm = -_ITERM_MAX;
+
+  if (event_servo) {
+    event_servo = false;
     // adjust duty_curr toward duty_target by duty_chg_per_interval
-    if(duty_target > duty_curr) {
+    if (duty_target > duty_curr) {
       duty_curr += duty_chg_per_interval;
-      if(duty_curr > duty_target) duty_curr = duty_target;
+      if (duty_curr > duty_target) duty_curr = duty_target;
     }
     else {
       duty_curr -= duty_chg_per_interval;
-      if(duty_curr < duty_target) duty_curr = duty_target;
-    } 
+      if (duty_curr < duty_target) duty_curr = duty_target;
+    }
 
     // update servo position
     myservo.writeMicroseconds(duty_curr);
   }
-  
-  if(event_serial) {
+
+  if (event_serial) {
     event_serial = false; //[20203118]
-    Serial.print("dist_ir:");
+    Serial.print("IR:");
     Serial.print(dist_raw);
-    Serial.print(",pterm:");
-    Serial.print(map(pterm,-1000,1000,510,610));
-    Serial.print(",duty_target:");
-    Serial.print(map(duty_target,1000,2000,410,510));
-    Serial.print(",duty_curr:");
-    Serial.print(map(duty_curr,1000,2000,410,510));
-    Serial.println(",Min:100,Low:200,dist_target:255,High:310,Max:410");
+    Serial.print(",T:");
+    Serial.print(dist_target);
+    Serial.print(",P:");
+    Serial.print(map(pterm, -1000, 1000, 510, 610));
+    Serial.print(",D:");
+    Serial.print(map(dterm, -1000, 1000, 510, 610));
+    Serial.print(",I:");
+    Serial.print(map(iterm, -1000, 1000, 510, 610));
+    Serial.print(",DTT:");
+    Serial.print(map(duty_target, 1000, 2000, 410, 510));
+    Serial.print(",DTC:");
+    Serial.print(map(duty_curr, 1000, 2000, 410, 510));
+    Serial.println(",-G:245,+G:265,m:0,M:800");
   }
 }
 
-float ir_distance(void){ // return value unit: mm
+float ir_distance(void) { // return value unit: mm
   float val;
   float volt = float(analogRead(PIN_IR));
-  val = ((6762.0/(volt-9.0))-4.0) * 10.0;
-  val = 100 + 300.0 / (b-a) * (val - a);
+  val = ((6762.0 / (volt - 9.0)) - 4.0) * 10.0;
+  val = 100 + 300.0 / (b - a) * (val - a);
   return val;
 }
 
-float ir_distance_filtered(void){ // return value unit: mm
-  return ir_distance(); // for now, just use ir_distance() without noise filter.
+float under_noise_filter(void) {
+  int currReading;
+  int largestReading = 0;
+  for (int i = 0; i < samples_num; i++) {
+    currReading = ir_distance();
+    if (currReading > largestReading) {
+      largestReading = currReading;
+    }
+    delayMicroseconds(DELAY_MICROS);
+  }
+  return largestReading;
+}
+
+float ir_distance_filtered(void) {
+  int currReading;
+  int lowestReading = 1024;
+  for (int i = 0; i < samples_num; i++) {
+    currReading = under_noise_filter();
+    if (currReading < lowestReading) {
+      lowestReading = currReading;
+    }
+  }
+  ema_dist = _DIST_ALPHA * lowestReading + (1 - _DIST_ALPHA) * ema_dist;
+  return ema_dist;
 }
